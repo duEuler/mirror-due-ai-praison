@@ -18,13 +18,42 @@ Storage Structure:
 
 import json
 import time
-import fcntl
+import os
+import sys
 import hashlib
 import logging
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from dataclasses import dataclass, asdict, field
+
+# Windows-compatible file locking
+if sys.platform == 'win32':
+    import msvcrt
+    
+    def lock_file(f, exclusive=False):
+        """Lock file on Windows."""
+        try:
+            msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK if exclusive else msvcrt.LK_LOCK, 1)
+        except (IOError, OSError):
+            pass  # Best effort locking on Windows
+    
+    def unlock_file(f):
+        """Unlock file on Windows."""
+        try:
+            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        except (IOError, OSError):
+            pass
+else:
+    import fcntl
+    
+    def lock_file(f, exclusive=False):
+        """Lock file on Unix."""
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+    
+    def unlock_file(f):
+        """Unlock file on Unix."""
+        fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 logger = logging.getLogger(__name__)
 
@@ -184,11 +213,11 @@ class FileMemory:
         
         try:
             with open(filepath, 'r', encoding='utf-8') as f:
-                fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+                lock_file(f, exclusive=False)
                 try:
                     data = json.load(f)
                 finally:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    unlock_file(f)
                 return data
         except (json.JSONDecodeError, IOError) as e:
             self._log(f"Error reading {filepath}: {e}", logging.WARNING)
@@ -198,11 +227,11 @@ class FileMemory:
         """Write JSON file with file locking."""
         try:
             with open(filepath, 'w', encoding='utf-8') as f:
-                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                lock_file(f, exclusive=True)
                 try:
                     json.dump(data, f, indent=2, ensure_ascii=False)
                 finally:
-                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                    unlock_file(f)
             return True
         except IOError as e:
             self._log(f"Error writing {filepath}: {e}", logging.ERROR)
